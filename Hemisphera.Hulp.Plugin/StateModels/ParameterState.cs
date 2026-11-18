@@ -2,7 +2,7 @@ using Hemisphera.Hulp.Plugin.Infrastructure;
 
 namespace Hemisphera.Hulp.Plugin.StateModels;
 
-public class ParameterSate : ObservedEntity
+public class ParameterState : ObservedEntity
 {
   public int Index { get; }
 
@@ -25,7 +25,7 @@ public class ParameterSate : ObservedEntity
   } = string.Empty;
 
 
-  public ParameterSate(int index)
+  public ParameterState(int index)
   {
     Index = index;
   }

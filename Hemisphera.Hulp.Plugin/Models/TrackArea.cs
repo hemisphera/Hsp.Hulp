@@ -3,7 +3,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ReaSharp;
 using ReaSharp.Models;
-using ReaSharp.Utils;
 
 namespace Hemisphera.Hulp.Plugin.Models;
 
@@ -14,7 +13,6 @@ public sealed class TrackArea : IDisposable
   public Song Song { get; }
   public TrackMediaItem Item { get; }
   public TrackMediaItem? AudioItem { get; private set; }
-  public TrackMediaItemWatcher? Watcher { get; }
   public AreaType AreaType { get; }
   public SourceType SourceType { get; }
   public List<TrackArea> LoopAreas { get; } = [];
@@ -22,6 +20,10 @@ public sealed class TrackArea : IDisposable
   public AreaState State { get; private set; }
 
   private readonly ILogger _logger;
+
+  // Handles of the items that existed on the track when the area was initialized; used to detect the item created by
+  // recording (record areas only).
+  private HashSet<nint>? _knownItems;
 
 
   public static TrackArea[] LoadRecordingAreas(Track track, Song song)
@@ -97,21 +99,24 @@ public sealed class TrackArea : IDisposable
     Project = track.Project;
     AreaType = areaType;
     SourceType = track.RecordingMode >= RecordingMode.MidiOverdub ? SourceType.Midi : SourceType.Audio;
-    if (AreaType == AreaType.Record)
-    {
-      var watcher = new TrackMediaItemWatcher(track, _logger);
-      watcher.ItemAdded += ItemAddedHandler;
-      Watcher = watcher;
-    }
   }
 
 
-  private void ItemAddedHandler(object? sender, TrackMediaItem item)
+  /// <summary>
+  /// Looks for items added to the track since <see cref="Initialize"/> and takes the first one starting at this area's
+  /// start as the recorded audio item.
+  /// </summary>
+  private void DetectRecordedItem()
   {
-    if (AudioItem != null || item.Start != Item.Start) return;
+    if (_knownItems == null) return;
+    foreach (var item in Item.Track.EnumerateMediaItems())
+    {
+      if (!_knownItems.Add(item.ReaperHandle)) continue;
+      if (AudioItem != null || item.Start != Item.Start) continue;
 
-    AudioItem = item;
-    _logger.LogInformation("Got audio item {Item} for area {Area}", item, this);
+      AudioItem = item;
+      _logger.LogInformation("Got audio item {Item} for area {Area}", item, this);
+    }
   }
 
   public async Task BeginRecording()
@@ -130,11 +135,24 @@ public sealed class TrackArea : IDisposable
 
   public async Task PropageToLoopAreas(Transport transport, ILogger logger)
   {
+    TrackMediaItem? recordedItem = null;
+    if (SourceType == SourceType.Audio)
+    {
+      // Wait for REAPER to create the recorded item before freezing the UI for the edit.
+      recordedItem = await WaitForRecordedItem();
+      if (recordedItem == null)
+      {
+        logger.LogWarning("No recorded item found for area {Area}; loop areas not updated", this);
+        return;
+      }
+    }
+
     try
     {
       Reaper.PreventUIRefresh.Invoke(1);
-      await PropagateMidiData();
-      await PropagateAudio(transport, logger);
+      PropagateMidiData();
+      if (recordedItem != null)
+        PropagateAudio(recordedItem, transport);
     }
     finally
     {
@@ -142,7 +160,7 @@ public sealed class TrackArea : IDisposable
     }
   }
 
-  private async Task PropagateMidiData()
+  private void PropagateMidiData()
   {
     if (SourceType != SourceType.Midi) return;
 
@@ -156,19 +174,11 @@ public sealed class TrackArea : IDisposable
       var data = fromTake.GetAllMidiEvents() ?? [];
       toTake.SetAllMidiEvents(data);
     }
-
-    await Task.CompletedTask;
   }
 
-  private async Task PropagateAudio(Transport transport, ILogger logger)
+  private void PropagateAudio(TrackMediaItem recordedItem, Transport transport)
   {
-    if (SourceType != SourceType.Audio) return;
-
     var project = transport.Project;
-
-    // wait for item to become available
-    var recordedItem = await WaitForRecordedItem();
-    if (recordedItem == null) return;
     AudioItem = recordedItem;
 
     Item.Track.SelectExclusive();
@@ -179,13 +189,13 @@ public sealed class TrackArea : IDisposable
     Reaper.Main_OnCommandEx.Invoke(40014, 0, project.ReaperHandle); // copy item
     foreach (var child in LoopAreas)
     {
-      child.AudioItem = await PasteAudioItem(child, transport);
+      child.AudioItem = PasteAudioItem(child, transport);
     }
 
     transport.CursorPosition = savedCursor;
   }
 
-  private async Task<TrackMediaItem?> PasteAudioItem(TrackArea toArea, Transport transport)
+  private TrackMediaItem? PasteAudioItem(TrackArea toArea, Transport transport)
   {
     transport.CursorPosition = toArea.Item.Start;
     Reaper.Main_OnCommandEx.Invoke(42398, 0, transport.Project.ReaperHandle); // Paste items
@@ -231,13 +241,14 @@ public sealed class TrackArea : IDisposable
   {
     timeout ??= TimeSpan.FromSeconds(3);
     var sw = Stopwatch.StartNew();
-    while (AudioItem == null)
+    while (true)
     {
-      await Task.Delay(1);
-      if (sw.Elapsed > timeout)
-      {
-        return null;
-      }
+      DetectRecordedItem();
+      if (AudioItem != null) break;
+      if (sw.Elapsed > timeout) return null;
+
+      // Runs in a scheduler pass: the continuation resumes in a later pass.
+      await Task.Delay(10);
     }
 
     return AudioItem;
@@ -245,7 +256,9 @@ public sealed class TrackArea : IDisposable
 
   public void Initialize()
   {
-    Watcher?.Restart();
+    _knownItems = AreaType == AreaType.Record
+      ? Item.Track.EnumerateMediaItems().Select(i => i.ReaperHandle).ToHashSet()
+      : null;
   }
 
 
@@ -256,6 +269,6 @@ public sealed class TrackArea : IDisposable
 
   public void Dispose()
   {
-    Watcher?.Dispose();
+    _knownItems = null;
   }
 }

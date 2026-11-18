@@ -1,3 +1,7 @@
+> **Historical design brief.** This is the original specification the dashboard was built from. The OSC addresses
+> (`/hulp/region`, `/hulp/track/@`, `/hulp/upcoming`) and some details have changed since; see the
+> [WebApp README](README.md) and the [OSC protocol](../README.md#osc-protocol) for the current behaviour.
+
 # Description
 
 This is a frontend for using REAPER in a live session environment. It connects to REAPER over OSC. It is a pure web application that serves as the "dashboard" during playback and for controlling the session.

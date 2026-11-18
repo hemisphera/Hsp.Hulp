@@ -31,7 +31,7 @@ public class OscService : BackgroundService
   public TransportState Transport { get; } = new();
   public event Action? TransportChanged;
 
-  // Tracks (8 fixed slots, indexed 0–7; logical index 1–8)
+  // Tracks (Constants.NoOfTracks fixed slots, indexed from 0; OSC addresses are 1-based)
   private readonly TrackInfo[] _tracks;
   public IReadOnlyList<TrackInfo> Tracks => _tracks;
   public event Action? TracksChanged;
@@ -59,7 +59,7 @@ public class OscService : BackgroundService
   {
     _logger = logger;
     _tracks = Enumerable.Range(0, Constants.NoOfTracks).Select(i => new TrackInfo(i)).ToArray();
-    _events = Enumerable.Range(0, 24).Select(_ => new UpcomingEvent()).ToArray();
+    _events = Enumerable.Range(0, Constants.NoOfEvents).Select(_ => new UpcomingEvent()).ToArray();
     FxParameters = Enumerable.Range(0, Constants.NoOfParameters).Select(index => new FxParameter(index)).ToArray();
     _fxDebouncers = FxParameters.Select(p => new FxValueDebouncer(p, () => FxParametersChanged?.Invoke())).ToArray();
   }
@@ -72,21 +72,21 @@ public class OscService : BackgroundService
 
     server.RegisterHandler(@"^/hulp/track/curr/fx/(\d+)/name$", ctx =>
     {
-      var slot = int.Parse(ctx.Match.Groups[1].Value);
-      FxParameters[slot - 1].Name = ctx.Message.Atoms.FirstOrDefault().StringValue;
+      if (!TryGetSlot(ctx.Match, FxParameters.Length, out var slot)) return;
+      FxParameters[slot].Name = ctx.Message.Atoms.FirstOrDefault().StringValue;
       FxParametersChanged?.Invoke();
     });
 
     server.RegisterHandler(@"^/hulp/track/curr/fx/(\d+)/value/str$", ctx =>
     {
-      var slot = int.Parse(ctx.Match.Groups[1].Value);
-      _fxDebouncers[slot - 1].ScheduleFormatted(ctx.Message.Atoms.LastOrDefault().StringValue ?? string.Empty);
+      if (!TryGetSlot(ctx.Match, FxParameters.Length, out var slot)) return;
+      _fxDebouncers[slot].ScheduleFormatted(ctx.Message.Atoms.LastOrDefault().StringValue ?? string.Empty);
     });
 
     server.RegisterHandler(@"^/hulp/track/curr/fx/(\d+)/value$", ctx =>
     {
-      var slot = int.Parse(ctx.Match.Groups[1].Value);
-      _fxDebouncers[slot - 1].SchedulePercentage(ctx.Message.Atoms.FirstOrDefault().Double64Value);
+      if (!TryGetSlot(ctx.Match, FxParameters.Length, out var slot)) return;
+      _fxDebouncers[slot].SchedulePercentage(ctx.Message.Atoms.FirstOrDefault().Double64Value);
     });
 
 
@@ -118,10 +118,16 @@ public class OscService : BackgroundService
     server.RegisterHandler("^/hulp/song/curr$", ctx =>
     {
       var atoms = ctx.Message.Atoms;
-      if (atoms.Count < 2) return;
+      if (atoms.Count < 3) return;
       Transport.SongId = atoms[0].Int32Value;
-      Transport.RegionStart = atoms[1].Float32Value;
-      Transport.RegionEnd = atoms[2].Float32Value;
+      Transport.RegionStart = ReadNumber(atoms[1]);
+      Transport.RegionEnd = ReadNumber(atoms[2]);
+      TransportChanged?.Invoke();
+    });
+
+    server.RegisterHandler("^/hulp/time$", ctx =>
+    {
+      Transport.TimePosition = ReadNumber(ctx.Message.Atoms.FirstOrDefault());
       TransportChanged?.Invoke();
     });
 
@@ -133,54 +139,54 @@ public class OscService : BackgroundService
 
     server.RegisterHandler(@"^/hulp/track/(\d+)/name$", ctx =>
     {
-      var index = int.Parse(ctx.Match.Groups[1].Value); // 1-based
-      _tracks[index - 1].Name = ctx.Message.Atoms.FirstOrDefault().StringValue ?? string.Empty;
+      if (!TryGetSlot(ctx.Match, _tracks.Length, out var index)) return;
+      _tracks[index].Name = ctx.Message.Atoms.FirstOrDefault().StringValue ?? string.Empty;
       TracksChanged?.Invoke();
     });
 
     server.RegisterHandler(@"^/hulp/track/(\d+)/sel$", ctx =>
     {
-      var index = int.Parse(ctx.Match.Groups[1].Value); // 1-based
-      _tracks[index - 1].Selected = ctx.Message.Atoms.FirstOrDefault().BoolValue;
+      if (!TryGetSlot(ctx.Match, _tracks.Length, out var index)) return;
+      _tracks[index].Selected = ctx.Message.Atoms.FirstOrDefault().BoolValue;
       TracksChanged?.Invoke();
     });
 
     server.RegisterHandler(@"^/hulp/track/(\d+)/mute$", ctx =>
     {
-      var index = int.Parse(ctx.Match.Groups[1].Value); // 1-based
-      _tracks[index - 1].Mute = ctx.Message.Atoms.FirstOrDefault().BoolValue;
+      if (!TryGetSlot(ctx.Match, _tracks.Length, out var index)) return;
+      _tracks[index].Mute = ctx.Message.Atoms.FirstOrDefault().BoolValue;
       TracksChanged?.Invoke();
     });
 
     server.RegisterHandler(@"^/hulp/track/(\d+)/solo$", ctx =>
     {
-      var index = int.Parse(ctx.Match.Groups[1].Value); // 1-based
-      _tracks[index - 1].Solo = ctx.Message.Atoms.FirstOrDefault().BoolValue;
+      if (!TryGetSlot(ctx.Match, _tracks.Length, out var index)) return;
+      _tracks[index].Solo = ctx.Message.Atoms.FirstOrDefault().BoolValue;
       TracksChanged?.Invoke();
     });
 
     server.RegisterHandler(@"^/hulp/track/(\d+)/recarm$", ctx =>
     {
-      var index = int.Parse(ctx.Match.Groups[1].Value); // 1-based
-      _tracks[index - 1].RecArm = ctx.Message.Atoms.FirstOrDefault().BoolValue;
+      if (!TryGetSlot(ctx.Match, _tracks.Length, out var index)) return;
+      _tracks[index].RecArm = ctx.Message.Atoms.FirstOrDefault().BoolValue;
       TracksChanged?.Invoke();
     });
     server.RegisterHandler(@"^/hulp/event/(\d+)/text$", ctx =>
     {
-      var number = int.Parse(ctx.Match.Groups[1].Value);
+      if (!TryGetSlot(ctx.Match, _events.Length, out var number)) return;
       lock (_eventsLock)
       {
-        _events[number - 1].Text = ctx.Message.Atoms.FirstOrDefault().StringValue ?? string.Empty;
+        _events[number].Text = ctx.Message.Atoms.FirstOrDefault().StringValue ?? string.Empty;
       }
 
       UpcomingEventsChanged?.Invoke();
     });
     server.RegisterHandler(@"^/hulp/event/(\d+)/pos$", ctx =>
     {
-      var number = int.Parse(ctx.Match.Groups[1].Value);
+      if (!TryGetSlot(ctx.Match, _events.Length, out var number)) return;
       lock (_eventsLock)
       {
-        _events[number - 1].Position = ctx.Message.Atoms.FirstOrDefault().Double64Value;
+        _events[number].Position = ctx.Message.Atoms.FirstOrDefault().Double64Value;
       }
 
       UpcomingEventsChanged?.Invoke();
@@ -197,6 +203,24 @@ public class OscService : BackgroundService
     {
     }
   }
+
+  /// <summary>Converts a 1-based slot number from an OSC address into a 0-based index, rejecting out-of-range ones.</summary>
+  private static bool TryGetSlot(System.Text.RegularExpressions.Match match, int count, out int index)
+  {
+    index = -1;
+    if (!int.TryParse(match.Groups[1].Value, out var number)) return false;
+    if (number < 1 || number > count) return false;
+    index = number - 1;
+    return true;
+  }
+
+  private static double ReadNumber(Atom atom) => atom.TypeTag switch
+  {
+    TypeTag.OscDouble => atom.Double64Value,
+    TypeTag.OscFloat32 => atom.Float32Value,
+    TypeTag.OscInt32 => atom.Int32Value,
+    _ => 0.0
+  };
 
   private void UpdateEvents()
   {

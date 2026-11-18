@@ -14,8 +14,9 @@ public class ChannelOscWriter : IOscWriter
   }
 
 
-  public async Task WriteAsync(IMessage message, CancellationToken token = default)
+  public void Write(IMessage message)
   {
-    await _writer.WriteAsync(message, token);
+    // The channel is created with BoundedChannelFullMode.DropOldest, so TryWrite always succeeds and never blocks.
+    _writer.TryWrite(message);
   }
 }

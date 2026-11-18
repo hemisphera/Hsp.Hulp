@@ -34,31 +34,43 @@ public class MonitoredParameterFactory
         _logger.LogDebug("Envelopes for FX {name}: {count}", fx.Name, envs.Length);
         return envs;
       })
-      .Select(envelope =>
-      {
-        if (_relativatorIndex == null) return null;
-        var plink = envelope.GetPropertyValue("PLINK", 1)?.AsString().Split(':') ?? [];
-        var linkSourceFxIndex = plink.Length > 0 ? (int?)int.Parse(plink[0]) : null;
-        _logger.LogDebug("Source FX index: {linkSourceFxIndex}", linkSourceFxIndex);
-        var index = envelope.GetPropertyValue("PLINK", 2)?.AsInt32();
-        _logger.LogDebug("Target FX index: {index}", index);
-        if (index == null) return null;
-        if (linkSourceFxIndex != _relativatorIndex) return null;
-
-        var source = new FxParameterIndices(
-          _track,
-          _relativatorIndex.Value,
-          index.Value);
-        var target = new FxParameterIndices(
-          _track,
-          _allFx.IndexOf(envelope.Parent),
-          int.Parse(envelope.DefaultValues[0].AsString().Split(':').First()));
-        return new MonitoredParameter(source, target);
-      }).OfType<MonitoredParameter>()
+      .Select(TryBuild)
+      .OfType<MonitoredParameter>()
       .OrderBy(p => p.Index)
       .ToArray();
   }
 
+
+  private MonitoredParameter? TryBuild(RppNode envelope)
+  {
+    // One malformed or unexpected envelope must not prevent the other parameters from loading.
+    try
+    {
+      if (_relativatorIndex == null) return null;
+      var plink = envelope.GetPropertyValue("PLINK", 1)?.AsString().Split(':') ?? [];
+      int? linkSourceFxIndex = plink.Length > 0 && int.TryParse(plink[0], out var parsedSource) ? parsedSource : null;
+      _logger.LogDebug("Source FX index: {linkSourceFxIndex}", linkSourceFxIndex);
+      var index = envelope.GetPropertyValue("PLINK", 2)?.AsInt32();
+      _logger.LogDebug("Target FX index: {index}", index);
+      if (index == null) return null;
+      if (linkSourceFxIndex != _relativatorIndex) return null;
+
+      if (envelope.DefaultValues.Count == 0) return null;
+      if (!int.TryParse(envelope.DefaultValues[0].AsString().Split(':').First(), out var targetParameterIndex)) return null;
+
+      var targetFxIndex = _allFx.IndexOf(envelope.Parent);
+      if (targetFxIndex < 0) return null;
+
+      var source = new FxParameterIndices(_track, _relativatorIndex.Value, index.Value);
+      var target = new FxParameterIndices(_track, targetFxIndex, targetParameterIndex);
+      return new MonitoredParameter(source, target);
+    }
+    catch (Exception ex)
+    {
+      _logger.LogWarning(ex, "Skipping FX parameter link that could not be read: {message}", ex.Message);
+      return null;
+    }
+  }
 
   private static int? FindRelativatorIndex(RppNode? trackNode)
   {
