@@ -71,7 +71,8 @@ everything else an audio area.
 initialize, every recording area that begins after the current position is cleaned (MIDI events deleted, `audio:` items
 removed, including those of its loop areas).
 
-While playing, the looper checks the position every few milliseconds:
+While playing, the looper checks the position on every scheduler pass — about 30 times per second in safe mode, every
+5 ms in fast mode (see [Safe mode](#safe-mode)):
 
 1. **Before a recording area** — when the playhead is within `LookaheadBeats` of a clean `record:` area, the time
    selection is set to that area and recording is toggled on at the next beat.
@@ -123,10 +124,14 @@ The MIDI ports must be enabled for input/output in REAPER's MIDI device preferen
 ## Configuration
 
 Settings live in `~/hulp.json` (user profile directory). The file is optional and reloaded when it changes; looper
-settings take effect on the next initialize, device port names on the next reconnect.
+settings take effect on the next initialize, device port names on the next reconnect, `Engine` settings immediately.
 
 ```json
 {
+  "Engine": {
+    "SafeMode": true,
+    "FastModeIntervalMs": 5
+  },
   "LooperSettings": {
     "LookaheadBeats": 1.0,
     "ContainerTrackName": "Songs"
@@ -144,6 +149,13 @@ settings take effect on the next initialize, device port names on the next recon
   }
 }
 ```
+
+### `Engine`
+
+| Setting              | Default | Description                                                                                  |
+|----------------------|---------|----------------------------------------------------------------------------------------------|
+| `SafeMode`           | `true`  | `true`: run on REAPER's main thread (~30 Hz). `false`: fast mode on a background thread. See [Safe mode](#safe-mode). |
+| `FastModeIntervalMs` | `5`     | Pass interval in fast mode.                                                                   |
 
 ### `LooperSettings`
 
@@ -184,12 +196,47 @@ Available levels: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical
 
 | Path                                  | Contents                                                                  |
 |---------------------------------------|---------------------------------------------------------------------------|
-| `Plugin.cs`                           | Entry point, DI setup, action registration                                |
+| `Plugin.cs`                           | Entry point, DI setup, action registration, unload                        |
 | `Commands.cs`                         | REAPER action handlers                                                    |
-| `Infrastructure/LooperState.cs`       | Song detection and the looper loop                                        |
-| `Infrastructure/HulpMonitor.cs`       | Polls REAPER (50 ms) and publishes state changes as OSC / to devices      |
+| `Infrastructure/HulpScheduler.cs`     | Runs all REAPER work in passes: main thread (safe mode) or background thread (fast mode) |
+| `Infrastructure/LooperState.cs`       | Song detection and the looper                                             |
+| `Infrastructure/HulpMonitor.cs`       | Polls REAPER each tick and publishes state changes as OSC / to devices    |
+| `Infrastructure/MidiInputPoller.cs`   | Polls REAPER's MIDI input for controller messages                         |
 | `Infrastructure/OscTransport.cs`      | Sends queued OSC messages to the `Hulp` OSC device                        |
 | `Models/Song.cs`, `Models/TrackArea.cs` | Song and record/loop area model, recording propagation                  |
 | `Models/MonitoredParameterFactory.cs` | Resolves Relativator-linked FX parameters                                 |
 | `Devices/`                            | Hardware controller integrations                                          |
 | `Settings/`                           | Option classes bound from `hulp.json`                                     |
+
+## Safe mode
+
+REAPER's API is meant to be called from its main thread only, and ReaSharp does not marshal calls (it even runs action
+handlers on thread-pool threads). All of the plugin's REAPER work — actions, the monitor, the looper, MIDI input
+polling and `await` continuations — therefore runs through `HulpScheduler`, one pass at a time. Where the passes run
+depends on the mode:
+
+| Mode                     | Runs on                                   | Pass rate        |
+|--------------------------|-------------------------------------------|------------------|
+| Safe mode (default)      | REAPER's main thread (REAPER `timer` callback) | ~30 per second (~33 ms) |
+| Fast mode                | A dedicated background thread             | every `FastModeIntervalMs` (5 ms) |
+
+Fast mode is how earlier versions worked: finer looper timing, but REAPER is called off its main thread, which can in
+rare cases corrupt edits or crash REAPER. In both modes passes never overlap, so the plugin's own code does not race
+with itself.
+
+Switching modes takes effect immediately, without restarting REAPER:
+
+- set `Engine:SafeMode` in `hulp.json`, or
+- run **Hulp: Toggle safe mode** (`HULP_TOGGLE_SAFE_MODE`), e.g. bound to a key or controller button. This action
+  bypasses the scheduler, so it works even if passes are stuck. The toggle lasts until `hulp.json` changes or REAPER
+  restarts.
+
+The current mode is logged as a warning on every switch.
+
+### Rules for code
+
+- Touch REAPER only from scheduler passes: subscribe to `HulpScheduler.Tick`, or run work with `Post` / `InvokeAsync`.
+  Actions are wrapped automatically (`Plugin.RegisterCommand`).
+- `await` in pass code resumes in a later pass. Never block a pass on such a task (`.Wait()`, `.Result`): that deadlocks.
+- Only the OSC send loop runs outside the scheduler; it does not call REAPER.
+- Do not use ReaSharp's `MidiListener` or `TrackMediaItemWatcher`: both poll REAPER from thread-pool threads.

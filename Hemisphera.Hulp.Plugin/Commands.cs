@@ -75,4 +75,11 @@ public class Commands
 
     return Task.CompletedTask;
   }
+
+  public static Task ToggleSafeMode(IServiceProvider sp, ActionContext context)
+  {
+    var scheduler = sp.GetRequiredService<HulpScheduler>();
+    scheduler.SetMode(!scheduler.SafeMode);
+    return Task.CompletedTask;
+  }
 }

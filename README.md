@@ -76,6 +76,10 @@ and reloaded on change. A complete example:
 
 ```json
 {
+  "Engine": {
+    "SafeMode": true,
+    "FastModeIntervalMs": 5
+  },
   "LooperSettings": {
     "LookaheadBeats": 1.0,
     "ContainerTrackName": "Songs"
@@ -111,6 +115,7 @@ See the [plugin documentation](Hemisphera.Hulp.Plugin/README.md#configuration) f
 | `HULP_RESTART`           | Hulp: Restart Engine        | Reconnects the OSC transport to the `Hulp` OSC device.                                           |
 | `HULP_RECONNECT_DEVICES` | Hulp: Reconnect devices     | Re-resolves the MIDI ports of all configured hardware devices.                                   |
 | `HULP_DEBUG`             | Hulp: Print Debug Info      | Dumps the current song (tracks, selectors, areas) to the REAPER console at `Debug` level.        |
+| `HULP_TOGGLE_SAFE_MODE`  | Hulp: Toggle safe mode      | Switches between safe mode (REAPER main thread) and fast mode (background thread, 5 ms); see the [plugin docs](Hemisphera.Hulp.Plugin/README.md#safe-mode). |
 
 ## OSC protocol
 

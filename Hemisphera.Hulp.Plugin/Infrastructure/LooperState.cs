@@ -8,24 +8,33 @@ using ReaSharp.Models;
 
 namespace Hemisphera.Hulp.Plugin.Infrastructure;
 
+/// <summary>
+/// Song detection and the record-then-loop logic.
+/// </summary>
+/// <remarks>
+/// Everything here runs in <see cref="HulpScheduler"/> passes (on REAPER's main thread in safe mode): <see cref="Tick"/>
+/// is driven by <see cref="HulpScheduler.Tick"/>, commands are dispatched to the scheduler, and <c>await</c>s resume
+/// there.
+/// </remarks>
 public class LooperState : ObservedEntity
 {
   private readonly ILogger<LooperState> _logger;
   private readonly IOptionsMonitor<LooperSettings> _settings;
   private readonly HulpMonitor _monitor;
+  private readonly HulpScheduler _scheduler;
   private readonly Transport _transport;
   private double _lookaheadBeats;
 
   private TrackSelector? _lastSelector;
   private Stopwatch? _timer;
-  private CancellationTokenSource? _cts;
+  private bool _running;
 
   public TimeSpan LookAhead
   {
     get
     {
       var bpm = Reaper.TimeMap2_GetDividedBpmAtTime.Invoke(0, _transport.PlayheadOrCursorPosition.TotalSeconds);
-      return TimeSpan.FromSeconds(60.0 / bpm * _lookaheadBeats); // lookahead 3/4 of a beat
+      return TimeSpan.FromSeconds(60.0 / bpm * _lookaheadBeats);
     }
   }
 
@@ -47,26 +56,29 @@ public class LooperState : ObservedEntity
   public LooperState(
     ILogger<LooperState> logger,
     IOptionsMonitor<LooperSettings> settings,
-    HulpMonitor monitor
+    HulpMonitor monitor,
+    HulpScheduler scheduler
   )
   {
     _logger = logger;
     _settings = settings;
     _monitor = monitor;
+    _scheduler = scheduler;
     _transport = new Transport(Project.Default);
 
-    PropertyChanged += (sender, args) =>
+    PropertyChanged += (_, args) =>
     {
       if (args.PropertyName == nameof(UpcomingArea))
       {
-        _ = UpcomingAreaChanged();
+        HulpScheduler.Forget(UpcomingAreaChanged(), _logger);
       }
 
       if (args.PropertyName == nameof(ActiveArea))
       {
-        _ = ActiveAreaChanged(args.OldValue as TrackArea, args.NewValue as TrackArea);
+        HulpScheduler.Forget(ActiveAreaChanged(args.OldValue as TrackArea, args.NewValue as TrackArea), _logger);
       }
     };
+    _scheduler.Tick += Tick;
     _logger.LogDebug("LooperState loaded");
   }
 
@@ -74,38 +86,13 @@ public class LooperState : ObservedEntity
   public async Task Start()
   {
     await Initialize();
-
-    _cts = new CancellationTokenSource();
-    var token = _cts.Token;
-
-    // start the looper
-    _ = Task.Run(async () =>
-    {
-      while (!token.IsCancellationRequested)
-      {
-        await Task.Delay(5, token);
-        try
-        {
-          await Tick();
-        }
-        catch (Exception ex)
-        {
-          // Don't let a single failure end the looper.
-          _logger.LogError(ex, "Looper tick failed: {message}", ex.Message);
-        }
-      }
-    }, token);
-
+    _running = true;
     _transport.Play();
   }
 
-  public async Task Stop()
+  public void Stop()
   {
-    if (_cts != null)
-    {
-      await _cts.CancelAsync();
-    }
-
+    _running = false;
     _timer?.Stop();
     CurrentSong?.Dispose();
     CurrentSong = null;
@@ -122,7 +109,7 @@ public class LooperState : ObservedEntity
     try
     {
       Reaper.PreventUIRefresh.Invoke(1);
-      await Stop();
+      Stop();
 
       if (time != null)
       {
@@ -177,15 +164,15 @@ public class LooperState : ObservedEntity
   }
 
 
-  private async Task Tick()
+  private void Tick()
   {
-    if (CurrentSong == null) return;
+    if (!_running || CurrentSong == null) return;
 
     _transport.Update();
 
     if (_transport.PlayheadPosition > CurrentSong.Region.End && _transport.IsPlaying)
     {
-      await Stop();
+      Stop();
       Reaper.Main_OnCommandEx.Invoke(40328, 0, _transport.Project.ReaperHandle);
       _logger.LogDebug("Reached end of region");
       return;
@@ -193,7 +180,7 @@ public class LooperState : ObservedEntity
 
     if (!_transport.IsPlaying && _timer?.Elapsed.TotalSeconds > 3)
     {
-      await Stop();
+      Stop();
       _logger.LogDebug("Playback stopped. Looper reset. ");
       return;
     }
@@ -236,18 +223,18 @@ public class LooperState : ObservedEntity
 
     if (oldArea is { State: AreaState.Recording })
     {
-      _ = oldArea.FinalizeRecording(_transport, _logger);
+      HulpScheduler.Forget(oldArea.FinalizeRecording(_transport, _logger), _logger);
     }
 
     if (newArea?.SourceType == SourceType.Midi)
     {
       // perform initial propagate after 1/4 of area has passed for MIDI items
-      _ = Task.Run(async () =>
-      {
-        var delay = TimeSpan.FromSeconds(newArea.Item.Length.TotalSeconds / 4);
-        await Task.Delay(delay);
-        await newArea.PropageToLoopAreas(_transport, _logger);
-      });
+      var song = CurrentSong;
+      await Task.Delay(TimeSpan.FromSeconds(newArea.Item.Length.TotalSeconds / 4));
+
+      // The looper may have been stopped or the song changed (disposing its areas) in the meantime.
+      if (!_running || CurrentSong != song) return;
+      await newArea.PropageToLoopAreas(_transport, _logger);
     }
   }
 

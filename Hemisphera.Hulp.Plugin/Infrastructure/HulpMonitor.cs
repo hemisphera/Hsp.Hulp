@@ -24,17 +24,23 @@ public class HulpMonitor
   private Track? _currentTrack;
   private readonly List<MonitoredParameter> _monitoredParameters = [];
   private Song? _currentSong;
-  private readonly SemaphoreSlim _lock = new(1, 1);
 
-  private CancellationTokenSource? _cancellationTokenSource;
+  private readonly HulpScheduler _scheduler;
+  private bool _running;
   private string? _lastError;
+
+  // Minimum polling interval for REAPER state. In safe mode every pass (~33 ms) qualifies; fast mode passes are much more
+  // frequent, so they are thinned out to keep the load comparable.
+  private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
+  private readonly System.Diagnostics.Stopwatch _sinceLastPoll = System.Diagnostics.Stopwatch.StartNew();
   private readonly Transport _transport = new(Project.Default);
 
 
-  public HulpMonitor(ILogger<HulpMonitor> logger, IOscWriter osc, IEnumerable<IDevice> devices)
+  public HulpMonitor(ILogger<HulpMonitor> logger, IOscWriter osc, IEnumerable<IDevice> devices, HulpScheduler scheduler)
   {
     _logger = logger;
     _osc = osc;
+    _scheduler = scheduler;
     _devices = devices.ToArray();
     foreach (var device in _devices)
     {
@@ -166,52 +172,28 @@ public class HulpMonitor
       _osc.Write(state.Position.ToOscMessage(baseAddress + "/pos"));
   }
 
-  public async Task Start()
+  /// <summary>Starts polling REAPER from the scheduler's passes.</summary>
+  public void Start()
   {
-    _cancellationTokenSource = new CancellationTokenSource();
-    var token = _cancellationTokenSource.Token;
-    _ = Task.Run(async () => { await MonitorLoop(token); }, token);
+    if (_running) return;
+    _running = true;
+    _scheduler.Tick += OnTick;
     _logger.LogDebug("Monitor started.");
-    await Task.CompletedTask;
   }
 
-  public async Task Stop()
+  public void Stop()
   {
-    if (_cancellationTokenSource == null) return;
-    await _cancellationTokenSource.CancelAsync();
-  }
-
-
-  private async Task MonitorLoop(CancellationToken token)
-  {
-    try
-    {
-      while (!token.IsCancellationRequested)
-      {
-        await Task.Delay(50, token);
-        await _lock.WaitAsync(token);
-        try
-        {
-          OnTick();
-        }
-        finally
-        {
-          _lock.Release();
-        }
-      }
-    }
-    catch (OperationCanceledException)
-    {
-      // stopped
-    }
-    catch (Exception ex)
-    {
-      _logger.LogError(ex, "Monitor loop exited unexpectedly: {message} {stack}.", ex.Message, ex.StackTrace);
-    }
+    if (!_running) return;
+    _running = false;
+    _scheduler.Tick -= OnTick;
+    _logger.LogDebug("Monitor stopped.");
   }
 
   private void OnTick()
   {
+    if (_sinceLastPoll.Elapsed < PollInterval) return;
+    _sinceLastPoll.Restart();
+
     // Each step is isolated so that an error in one (e.g. an unexpected FX chain) neither stops the others nor the
     // monitor itself; it is retried on the next tick.
     Run(nameof(UpdateCurrentTrack), UpdateCurrentTrack);
@@ -228,7 +210,6 @@ public class HulpMonitor
     }
     catch (Exception ex)
     {
-      // Log once per distinct error instead of on every tick.
       var key = name + ex.Message;
       if (key == _lastError) return;
       _lastError = key;
@@ -350,26 +331,18 @@ public class HulpMonitor
 
   public void LoadSong(Song? currentSong, IReadOnlyList<Song> songs)
   {
-    try
+    _currentSong = currentSong;
+    _state.Region = currentSong?.Region;
+    for (var i = 0; i < _songs.Length; i++)
     {
-      _lock.Wait();
-      _currentSong = currentSong;
-      _state.Region = currentSong?.Region;
-      for (var i = 0; i < _songs.Length; i++)
-      {
-        var song = i < songs.Count ? songs[i] : null;
-        _songs[i].RegionId = song?.Region.Id ?? -1;
-        _songs[i].Name = song?.Name ?? string.Empty;
-      }
+      var song = i < songs.Count ? songs[i] : null;
+      _songs[i].RegionId = song?.Region.Id ?? -1;
+      _songs[i].Name = song?.Name ?? string.Empty;
+    }
 
-      LoadEvents(_transport);
-      FullRefresh();
-      _logger.LogDebug("Loaded song: [{song}]", currentSong?.Name ?? "<none>");
-    }
-    finally
-    {
-      _lock.Release();
-    }
+    LoadEvents(_transport);
+    FullRefresh();
+    _logger.LogDebug("Loaded song: [{song}]", currentSong?.Name ?? "<none>");
   }
 
   public void FullRefresh()

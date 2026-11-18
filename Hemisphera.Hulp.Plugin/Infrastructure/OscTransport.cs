@@ -26,7 +26,7 @@ public class OscTransport : ITransport
 
 
   /// <summary>
-  /// (Re)connects to the "Hulp" OSC device.
+  /// (Re)connects to the "Hulp" OSC device. Call from a scheduler pass (reads REAPER settings).
   /// </summary>
   public async Task StartAsync(CancellationToken ct)
   {
