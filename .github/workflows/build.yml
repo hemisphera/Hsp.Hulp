@@ -3,12 +3,70 @@ name: Build
 on:
   push:
     branches: [ "release" ]
+  workflow_dispatch:
+
+env:
+  MAJOR_VERSION: 0
+  MINOR_VERSION: 0
 
 jobs:
+
+  # ── Version (counter API on release pushes) ─────────────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed to see existing release tags
+
+      - name: Determine version
+        id: version
+        env:
+          COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          base="${MAJOR_VERSION}.${MINOR_VERSION}"
+
+          if [[ "$EVENT_NAME" == "push" && "$REF" == "refs/heads/release" ]]; then
+            # Re-run of a commit that was already released: reuse its tag instead of
+            # asking the counter again (it only dedupes against the previous signature).
+            existing=$(git tag --points-at "$GITHUB_SHA" --list "v${base}.*" | sort -V | tail -n1)
+            if [[ -n "$existing" ]]; then
+              version="${existing#v}"
+              echo "Commit already tagged as $existing - reusing it."
+            else
+              response=$(curl -fsS -X POST \
+                "https://counters.hemisphera.com/counters/github/${REPO_NAME}_${MAJOR_VERSION}_${MINOR_VERSION}" \
+                -H "X-API-Key: ${COUNTER_API_KEY}" \
+                -H 'Content-Type: application/json' \
+                -d '{"signature": "'"${GITHUB_SHA}"'", "seed": 1, "increment": 1}')
+              build_number=$(echo "$response" | jq -r '.value.value')
+              if ! [[ "$build_number" =~ ^[0-9]+$ ]]; then
+                echo "Unexpected counter response: $response" >&2
+                exit 1
+              fi
+              version="${base}.${build_number}"
+            fi
+            release=true
+          else
+            version="${base}.0-dev.${GITHUB_SHA::7}"
+            release=false
+          fi
+
+          echo "Version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
 
   # ── WebApp (framework-dependent, per-platform) ─────────────────────────────────
   build-webapp:
     name: Build WebApp (${{ matrix.rid }})
+    needs: version
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -35,6 +93,7 @@ jobs:
           -r ${{ matrix.rid }}
           -c Release
           --no-self-contained
+          -p:Version=${{ needs.version.outputs.version }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -44,6 +103,7 @@ jobs:
   # ── Plugin (native AOT, per-platform) ───────────────────────────────────────
   build-plugin:
     name: Build Plugin (${{ matrix.rid }})
+    needs: version
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -77,8 +137,44 @@ jobs:
           dotnet publish Hemisphera.Hulp.Plugin/Hemisphera.Hulp.Plugin.csproj
           -r ${{ matrix.rid }}
           -c Release
+          -p:Version=${{ needs.version.outputs.version }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: plugin-${{ matrix.rid }}
           path: Hemisphera.Hulp.Plugin/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.artifact }}
+
+  # ── Release (only on pushes to "release") ───────────────────────────────────
+  release:
+    needs: [version, build-webapp, build-plugin]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Package release assets
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          for dir in dist/webapp-*; do
+            rid="${dir#dist/webapp-}"
+            (cd "$dir" && zip -qr "$GITHUB_WORKSPACE/assets/Hulp.WebApp-${VERSION}-${rid}.zip" .)
+          done
+          cp dist/plugin-*/reaper_hulp.* assets/
+          ls -l assets
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          files: assets/*
+          generate_release_notes: true
