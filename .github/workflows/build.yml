@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [ "release" ]
+    branches: [ "master" ]
   workflow_dispatch:
 
 env:
@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           base="${MAJOR_VERSION}.${MINOR_VERSION}"
 
-          if [[ "$EVENT_NAME" == "push" && "$REF" == "refs/heads/release" ]]; then
+          if [[ "$EVENT_NAME" == "push" && "$REF" == "refs/heads/master" ]]; then
             # Re-run of a commit that was already released: reuse its tag instead of
             # asking the counter again (it only dedupes against the previous signature).
             existing=$(git tag --points-at "$GITHUB_SHA" --list "v${base}.*" | sort -V | tail -n1)
@@ -144,7 +144,7 @@ jobs:
           name: plugin-${{ matrix.rid }}
           path: Hemisphera.Hulp.Plugin/bin/Release/net10.0/${{ matrix.rid }}/publish/${{ matrix.artifact }}
 
-  # ── Release (only on pushes to "release") ───────────────────────────────────
+  # ── Release (only on pushes to "master") ───────────────────────────────────
   release:
     needs: [version, build-webapp, build-plugin]
     if: needs.version.outputs.release == 'true'
