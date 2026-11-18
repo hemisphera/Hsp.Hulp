@@ -84,7 +84,15 @@ public class LooperState : ObservedEntity
       while (!token.IsCancellationRequested)
       {
         await Task.Delay(5, token);
-        await Tick();
+        try
+        {
+          await Tick();
+        }
+        catch (Exception ex)
+        {
+          // Don't let a single failure end the looper.
+          _logger.LogError(ex, "Looper tick failed: {message}", ex.Message);
+        }
       }
     }, token);
 
@@ -134,7 +142,7 @@ public class LooperState : ObservedEntity
 
       CurrentSong = songs.FirstOrDefault(s => now.IsWithin(s.Region));
       CurrentSong?.Initialize(now);
-      _monitor.LoadSong(CurrentSong);
+      _monitor.LoadSong(CurrentSong, songs);
 
       _timer = Stopwatch.StartNew();
     }
@@ -148,8 +156,9 @@ public class LooperState : ObservedEntity
 
   public List<Song> EnumerateSongs()
   {
+    var trackTree = TrackTreeItem.Build(Project.Default);
     var songs = Region.Enumerate(Project.Default)
-      .Select(r => Song.FromRegion(r, _settings.CurrentValue.ContainerTrackName))
+      .Select(r => Song.FromRegion(r, trackTree, _settings.CurrentValue.ContainerTrackName))
       .OfType<Song>()
       .ToList();
     return songs;
@@ -179,12 +188,14 @@ public class LooperState : ObservedEntity
       await Stop();
       Reaper.Main_OnCommandEx.Invoke(40328, 0, _transport.Project.ReaperHandle);
       _logger.LogDebug("Reached end of region");
+      return;
     }
 
     if (!_transport.IsPlaying && _timer?.Elapsed.TotalSeconds > 3)
     {
       await Stop();
       _logger.LogDebug("Playback stopped. Looper reset. ");
+      return;
     }
 
     var pos = _transport.PlayheadOrCursorPosition;

@@ -23,8 +23,9 @@ A plain `dotnet build` produces a managed assembly only; REAPER can load the plu
 ### OSC output
 
 The plugin sends to the REAPER control surface named **`Hulp`** (*Preferences → Control/OSC/web*), using that device's
-IP and port. If no such device exists, a warning is logged and nothing is sent. After changing the device, run
-**Hulp: Restart Engine** (`HULP_RESTART`). The full message list is in the [root README](../README.md#osc-protocol).
+IP and port. If no such device exists, a warning is logged and nothing is sent (state changes are discarded, not
+queued). After changing the device, run **Hulp: Restart Engine** (`HULP_RESTART`); the full state is resent on every
+(re)connect. Send failures (e.g. while the WebApp is not running) are logged once and do not stop the transport. The full message list is in the [root README](../README.md#osc-protocol).
 
 ## Project layout
 

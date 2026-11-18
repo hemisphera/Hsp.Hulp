@@ -15,9 +15,19 @@ namespace Hemisphera.Hulp.Plugin;
 
 public static class Plugin
 {
+  private static IHost? _host;
+
+
   [UnmanagedCallersOnly(EntryPoint = "ReaperPluginEntry")]
   public static int ReaperPluginEntry(IntPtr hInstance, IntPtr rec)
   {
+    // REAPER calls the entry point again with rec == NULL when unloading the plugin.
+    if (rec == IntPtr.Zero)
+    {
+      Shutdown();
+      return 0;
+    }
+
     var settingsPath = Path.Combine(
       Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
       "hulp.json");
@@ -31,11 +41,13 @@ public static class Plugin
       })
       .ConfigureServices((context, sc) =>
       {
+        // Producers never block: when nothing drains the queue (no "Hulp" OSC device), the oldest messages are
+        // dropped; the full state is resent whenever the transport connects.
         sc.AddSingleton<Channel<IMessage>>(_ =>
           Channel.CreateBounded<IMessage>(new BoundedChannelOptions(1000)
           {
-            SingleWriter = true,
-            FullMode = BoundedChannelFullMode.Wait
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.DropOldest
           }));
         sc.AddSingleton<ChannelWriter<IMessage>>(sp => sp.GetRequiredService<Channel<IMessage>>().Writer);
         sc.AddSingleton<ChannelReader<IMessage>>(sp => sp.GetRequiredService<Channel<IMessage>>().Reader);
@@ -52,11 +64,12 @@ public static class Plugin
         sc.AddSingleton<HulpMonitor>();
         sc.AddSingleton<OscTransport>();
         sc.AddSingleton<LooperState>();
-        sc.AddSingleton<MidiListener>();
+        sc.AddSingleton<MidiInputPoller>();
         sc.AddSingleton<ITransport, OscTransport>(services => services.GetRequiredService<OscTransport>());
       })
       .ConfigureAppConfiguration(cfg => { cfg.AddJsonFile(settingsPath, optional: true, reloadOnChange: true); })
       .Build();
+    _host = host;
 
     try
     {
@@ -76,6 +89,7 @@ public static class Plugin
       var monitor = state.Services.GetRequiredService<HulpMonitor>();
       _ = monitor.Start();
       var transport = state.Services.GetRequiredService<ITransport>();
+      transport.Connected += (_, _) => monitor.FullRefresh();
       _ = transport.StartAsync(CancellationToken.None);
 
       return 1;
@@ -84,6 +98,24 @@ public static class Plugin
     {
       ReaperConsoleLogger.WriteLog("Failed to initialize Hulp plugin: " + ex.Message);
       return 0;
+    }
+  }
+
+  private static void Shutdown()
+  {
+    try
+    {
+      var host = _host;
+      if (host == null) return;
+      Task.Run(async () =>
+      {
+        await host.StopAsync(TimeSpan.FromSeconds(1));
+        host.Dispose();
+      }).Wait(TimeSpan.FromSeconds(2));
+    }
+    catch
+    {
+      // REAPER is shutting down; nothing sensible left to do.
     }
   }
 }

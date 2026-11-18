@@ -13,8 +13,7 @@ keep on a second screen or a phone.
 | `Hemisphera.Hulp.Shared`  | Class library                  | Constants shared by both sides (number of parameter slots, tracks, events, songs).                                          |
 
 `Dashboard.json` is an [Open Stage Control](https://openstagecontrol.ammd.net/) session with eight knobs for the FX
-parameters. It still uses the old `/hulp/curr/...` addresses and needs updating before it works with the current plugin
-(see [OSC protocol](#osc-protocol)).
+parameters of the selected track (see [OSC protocol](#osc-protocol)).
 
 ```
 REAPER + reaper_hulp ──OSC/UDP──▶ Hulp WebApp (UDP :9000) ──HTTP :5000──▶ browser
@@ -123,15 +122,16 @@ Messages sent by the plugin to the `Hulp` OSC device (indices are 1-based):
 | `/hulp/song/curr/name`               | string                            | Current song name                                          |
 | `/hulp/beat`                         | string `"beat/numerator"`         | Beat position within the measure                           |
 | `/hulp/qnpos`                        | int                               | Playhead/cursor position in quarter notes                  |
+| `/hulp/time`                         | double                            | Playhead/cursor position in seconds (0.1 s resolution)     |
 | `/hulp/track/curr/name`              | string                            | Name of the selected track                                 |
 | `/hulp/track/curr/fx/{1-8}/name`     | string                            | FX parameter slot name                                     |
 | `/hulp/track/curr/fx/{1-8}/value`    | double (0–1)                      | FX parameter normalized value                              |
 | `/hulp/track/curr/fx/{1-8}/value/str`| string                            | FX parameter formatted value                               |
-| `/hulp/track/{1-8}/name`             | string                            | Song track name                                            |
-| `/hulp/track/{1-8}/sel` · `/mute` · `/solo` · `/recarm` | bool           | Song track state                                           |
+| `/hulp/track/{1-10}/name`            | string                            | Song track name                                            |
+| `/hulp/track/{1-10}/sel` · `/mute` · `/solo` · `/recarm` | bool          | Song track state                                           |
 | `/hulp/event/{1-24}/text`            | string                            | Upcoming event description                                 |
 | `/hulp/event/{1-24}/pos`             | double                            | Event position in quarter notes                            |
-| `/hulp/song/{1-20}/id` · `/name`     | int                               | Song list (reserved; not populated yet)                    |
+| `/hulp/song/{1-20}/id` · `/name`     | int · string                      | Song list in project order (id -1 / empty name when unused) |
 
 The WebApp additionally consumes REAPER's standard `/play`, `/record` and `/pause` (float, > 0.5 = on).
 

@@ -17,9 +17,8 @@ public sealed class Song : IDisposable
   public List<SongNote> Notes { get; set; } = [];
 
 
-  public static Song? FromRegion(Region region, string containerName)
+  public static Song? FromRegion(Region region, IEnumerable<TrackTreeItem> trackTree, string containerName)
   {
-    var trackTree = TrackTreeItem.Build(region.Project);
     var container = trackTree.FirstOrDefault(t => t.Track.Name.Equals(containerName, StringComparison.OrdinalIgnoreCase));
     var rootTrack = container?.Children.FirstOrDefault(ch => ch.Track.Name.Equals(region.Name, StringComparison.OrdinalIgnoreCase));
     if (rootTrack == null) return null;

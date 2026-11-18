@@ -29,4 +29,11 @@ public class HulpState : ObservedEntity
     get => field;
     set => SetFieldValue(ref field, value);
   }
+
+  /// <summary>Playhead (or edit cursor when stopped) position in seconds, rounded to 0.1 s.</summary>
+  public double TimePosition
+  {
+    get => field;
+    set => SetFieldValue(ref field, value);
+  }
 }

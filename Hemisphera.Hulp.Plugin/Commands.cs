@@ -57,10 +57,10 @@ public class Commands
     await state.Initialize();
   }
 
-  public static async Task RestartEngine(IServiceProvider arg1, ActionContext arg2)
+  public static async Task RestartEngine(IServiceProvider sp, ActionContext arg2)
   {
     var ct = CancellationToken.None;
-    var transport = PluginState.Instance.Services.GetRequiredService<ITransport>();
+    var transport = sp.GetRequiredService<ITransport>();
     await transport.StopAsync(ct);
     await transport.StartAsync(ct);
   }
